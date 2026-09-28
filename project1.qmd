@@ -4,24 +4,128 @@ author: "Grace Haley"
 format: html
 editor: visual
 ---
+## Introduction
 
-## Quarto
+For this project, I will be working with data from the Public Use Microdata 
+Sample (PUMS) Census API. I will create functions to pull and process the 
+data, summarize different variables, and create plots. The functions will 
+also allow different years and geographic areas to be selected.
 
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+## Part 1: Data Processing
 
-## Running Code
+### Parsing Variable Values
 
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+Before pulling data from the PUMS API, I first need to get information about 
+the variables available for each year. The Census API provides JSON files 
+that contain the variable descriptions and their possible values. I will 
+use these to create lists that can be used later when processing the data.
 
 ```{r}
-1 + 1
+library(httr)
+library(jsonlite)
+library(tidyverse)
+library(lubridate)
 ```
 
-You can add options to executable code like this
+I will start with the 2024 data to look at how the variable information is 
+returned before creating a function that can do this for each year.
 
 ```{r}
-#| echo: false
-2 * 2
+url_2024 <- "https://api.census.gov/data/2024/acs/acs1/pums/variables.json"
+
+response_2024 <- GET(url_2024)
+
+response_2024
+
+# Parse the JSON response into an R list
+variables_2024 <- content(response_2024, as = "parsed")
+
+# Look at the names of the first few variables
+head(names(variables_2024$variables))
+
+# Look at the information stored for the SEX variable
+variables_2024$variables$SEX
+
+# Pull out the possible values for SEX
+variables_2024$variables$SEX$values$item
+
+# Variables needed for 2024
+needed_vars <- c(
+  "AGEP", "GASP", "GRPIP", "JWAP", "JWDP", "JWMNP",
+  "PWGTP", "FER", "HHL", "SCH", "SCHL", "SEX",
+  "STATE", "REGION", "DIVISION"
+)
+
+# Keep only the variables needed for the project
+selected_2024 <- variables_2024$variables[needed_vars]
+
+names(selected_2024)
+```
+Now that I know how the variable information is stored, I can put these 
+steps into a function. The function will take a year, pull the variable 
+information for that year, and keep only the variables needed for this 
+project. The state variable is named ST in 2021 and 2022 and STATE in 
+2023 and 2024, so I also have to account for that difference.
+
+```{r}
+# Pull and parse the variable information for a given year
+get_variable_info <- function(year) {
+  
+  # Create the URL for the selected year
+  url <- paste0(
+    "https://api.census.gov/data/",
+    year,
+    "/acs/acs1/pums/variables.json"
+  )
+  
+  # Pull and parse the JSON data
+  response <- GET(url)
+  variable_data <- content(response, as = "parsed")
+  
+  # The state variable has a different name in 2021 and 2022
+  state_var <- if (year %in% c(2021, 2022)) "ST" else "STATE"
+  
+  # Variables needed for the project
+  needed_vars <- c(
+    "AGEP", "GASP", "GRPIP", "JWAP", "JWDP", "JWMNP",
+    "PWGTP", "FER", "HHL", "SCH", "SCHL", "SEX",
+    state_var, "REGION", "DIVISION"
+  )
+  
+  # Return only the needed variables
+  variable_data$variables[needed_vars]
+}
+
+#Testing
+variable_info_2024 <- get_variable_info(2024)
+
+names(variable_info_2024)
+
+# Test the function with 2021
+variable_info_2021 <- get_variable_info(2021)
+
+names(variable_info_2021)
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+The function worked for both 2021 and 2024, including the different state 
+variable names. I can now use the function to get the variable information 
+for all four years and save the lists together so they can be used later.
+
+```{r}
+# Get the variable information for each year
+variable_info_2021 <- get_variable_info(2021)
+variable_info_2022 <- get_variable_info(2022)
+variable_info_2023 <- get_variable_info(2023)
+variable_info_2024 <- get_variable_info(2024)
+
+# Store all four years together in one list
+variable_info <- list(
+  `2021` = variable_info_2021,
+  `2022` = variable_info_2022,
+  `2023` = variable_info_2023,
+  `2024` = variable_info_2024
+)
+
+# Save the variable information in the data folder
+saveRDS(variable_info, "data/variable_info.rds")
+```
