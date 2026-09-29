@@ -524,5 +524,123 @@ summary.census <- function(
     available_numeric,
     "PWGTP"
   )
+  # Use all available variables if none are selected
+if (is.null(numeric_vars)) {
+  numeric_vars <- available_numeric
+}
+
+if (is.null(categorical_vars)) {
+  categorical_vars <- available_categorical
+}
+
+# Make sure the selected numeric variables are available
+if (!all(numeric_vars %in% available_numeric)) {
+  stop("One or more numeric variables are not available.")
+}
+
+# Make sure the selected categorical variables are available
+if (!all(categorical_vars %in% available_categorical)) {
+  stop("One or more categorical variables are not available.")
+}
+  # Make a list to hold all of the summaries
+summary_results <- list()
+
+# Calculate the weighted summaries for numeric variables
+for (var in numeric_vars) {
+  
+  values <- object[[var]]
+  weights <- object$PWGTP
+  
+  # Only use rows that have a value for this variable
+  keep <- !is.na(values)
+  values <- values[keep]
+  weights <- weights[keep]
+  
+  # Calculate the weighted mean
+  weighted_mean <- sum(values * weights) / sum(weights)
+  
+  # Calculate the weighted standard deviation
+  weighted_sd <- sqrt(
+    sum(values^2 * weights) / sum(weights) -
+      weighted_mean^2
+  )
+  
+  summary_results[[var]] <- c(
+    mean = weighted_mean,
+    sd = weighted_sd
+  )
+}
+# Get the weighted counts for categorical variables
+for (var in categorical_vars) {
+  
+  values <- object[[var]]
+  weights <- object$PWGTP
+  
+  # Add up the weights for each category
+  weighted_counts <- tapply(
+    weights,
+    values,
+    sum,
+    na.rm = TRUE
+  )
+  
+  summary_results[[var]] <- weighted_counts
+}
+
+# Return all of the summaries
+summary_results
 }
 ```
+
+### Plot Function
+
+I also want a quick way to compare a numeric variable across different categories. I will create a plot function for census objects that makes a weighted boxplot using the person weights.
+
+```{r}
+# Make a weighted boxplot for census data
+plot.census <- function(
+  x,
+  categorical_var,
+  numeric_var,
+  ...
+) {
+  
+  # Make sure only one variable of each type was selected
+  if (length(categorical_var) != 1 || length(numeric_var) != 1) {
+    stop("Choose one categorical variable and one numeric variable.")
+  }
+  
+  # Make sure the categorical variable is in the data
+  if (
+    !categorical_var %in% names(x) ||
+    !is.factor(x[[categorical_var]])
+  ) {
+    stop("The categorical variable must be a factor in the data.")
+  }
+  
+  # Make sure the numeric variable is in the data
+  if (
+    !numeric_var %in% names(x) ||
+    !is.numeric(x[[numeric_var]]) ||
+    numeric_var == "PWGTP"
+  ) {
+    stop("The numeric variable must be an available numeric variable.")
+  }
+  # Make the weighted boxplot
+ggplot(
+  x,
+  aes(
+    x = get(categorical_var),
+    y = get(numeric_var),
+    weight = PWGTP
+  )
+) +
+  geom_boxplot() +
+  labs(
+    x = categorical_var,
+    y = numeric_var
+  )
+}
+```
+
+
