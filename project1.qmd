@@ -28,19 +28,8 @@ url_2024 <- "https://api.census.gov/data/2024/acs/acs1/pums/variables.json"
 
 response_2024 <- GET(url_2024)
 
-response_2024
-
 # Parse the JSON response into an R list
 variables_2024 <- content(response_2024, as = "parsed")
-
-# Look at the names of the first few variables
-head(names(variables_2024$variables))
-
-# Look at the information stored for the SEX variable
-variables_2024$variables$SEX
-
-# Pull out the possible values for SEX
-variables_2024$variables$SEX$values$item
 
 # Variables needed for 2024
 needed_vars <- c(
@@ -85,19 +74,10 @@ get_variable_info <- function(year) {
   # Return only the needed variables
   variable_data$variables[needed_vars]
 }
-
-#Testing
-variable_info_2024 <- get_variable_info(2024)
-
-names(variable_info_2024)
-
-# Test the function with 2021
-variable_info_2021 <- get_variable_info(2021)
-
-names(variable_info_2021)
 ```
-
-The function works for both the older and newer years, so I can use it to get the variable information for all four years. I will save everything together in the data folder so I can use it again later without having to pull it every time.
+The function works for both versions of the state variable, so I can use it 
+for all four years. I will save everything together in the data folder so I 
+can use it again later without having to pull it every time.
 
 ```{r}
 # Get the variable information for each year
@@ -176,7 +156,7 @@ The helper function gets the data into a tibble, but the variables still need to
 JWAP and JWDP are a little different from the other numeric variables because the Census stores them as codes for ranges of time. I will use the middle of each time range as the value, so I made a helper function to calculate the midpoint.
 
 ```{r}
-# convert a Census time range into its midpoint
+# Convert a Census time range into its midpoint
 get_time_midpoint <- function(time_range) {
   
   # Return NA if there is no time to use
@@ -185,7 +165,7 @@ get_time_midpoint <- function(time_range) {
     is.na(time_range) ||
     time_range == ""
   ) {
-    return(NA_real_)
+    return(NA)
   }
   
   # Clean up a.m. and p.m. so the times can be read
@@ -202,10 +182,9 @@ get_time_midpoint <- function(time_range) {
   end_time <- parse_date_time(times[2], orders = "I:M p")
   
   # Find the middle of the time range
-  start_minutes <- hour(start_time) * 60 + minute(start_time)
-  end_minutes <- hour(end_time) * 60 + minute(end_time)
+  midpoint <- start_time + (end_time - start_time) / 2
   
-  (start_minutes + end_minutes) / 2
+  midpoint
 }
 ```
 
@@ -395,9 +374,12 @@ get_pums_data <- function(
       }
     )
     
-    census_data[[var]] <- sapply(
-      time_ranges,
-      get_time_midpoint
+    census_data[[var]] <- do.call(
+      c,
+      lapply(
+        time_ranges,
+        get_time_midpoint
+      )
     )
   }
   
@@ -459,39 +441,46 @@ get_multiple_years <- function(
   if (!all(years %in% valid_years)) {
     stop("Years must be 2021, 2022, 2023, 2024, or all.")
   }
+  
   # Pull the data for each selected year
-year_data <- lapply(
-  years,
-  function(current_year) {
-    
-    data <- get_pums_data(
-      year = current_year,
-      numeric_vars = numeric_vars,
-      categorical_vars = categorical_vars,
-      geography = geography,
-      geography_value = geography_value
-    )
-    
-    # Keep track of which year each row came from
-    data$year <- current_year
-    
-    data
-  }
-)
-
-# Combine all of the years into one tibble
-combined_data <- bind_rows(year_data)
-
-# Treat year as a category instead of a numeric variable
-combined_data$year <- factor(combined_data$year)
-
-# Keep the census class after combining the data
-class(combined_data) <- c(
-  "census",
-  setdiff(class(combined_data), "census")
-)
-
-combined_data
+  year_data <- lapply(
+    years,
+    function(current_year) {
+      
+      data <- get_pums_data(
+        year = current_year,
+        numeric_vars = numeric_vars,
+        categorical_vars = categorical_vars,
+        geography = geography,
+        geography_value = geography_value
+      )
+      
+      # Keep the state variable name the same across years
+      if (geography == "State" && "ST" %in% names(data)) {
+        data <- data |>
+          rename(STATE = ST)
+      }
+      
+      # Keep track of which year each row came from
+      data$year <- current_year
+      
+      data
+    }
+  )
+  
+  # Combine all of the years into one tibble
+  combined_data <- bind_rows(year_data)
+  
+  # Treat year as a category instead of a numeric variable
+  combined_data$year <- factor(combined_data$year)
+  
+  # Keep the census class after combining the data
+  class(combined_data) <- c(
+    "census",
+    setdiff(class(combined_data), "census")
+  )
+  
+  combined_data
 }
 ```
 
@@ -502,7 +491,7 @@ combined_data
 Now that the data can be pulled and combined, I want an easier way to summarize it. I will create a summary function specifically for census objects. For numeric variables, I will use the person weights to calculate weighted means and standard deviations. For categorical variables, I will use the weights to get counts for each category.
 
 ```{r}
-# Summarize a census data set
+# Summarize numeric and categorical Census variables
 summary.census <- function(
   object,
   numeric_vars = NULL,
@@ -510,85 +499,72 @@ summary.census <- function(
   ...
 ) {
   
-  # Find the variables we can summarize
-  available_numeric <- names(object)[
-    sapply(object, is.numeric)
-  ]
+  # Don't include the weights or time variables in the numeric summaries
+  ignored_numeric <- c("PWGTP", "JWAP", "JWDP")
   
-  available_categorical <- names(object)[
-    sapply(object, is.factor)
-  ]
+  # Find the numeric variables if none were selected
+  if (is.null(numeric_vars)) {
+    numeric_vars <- names(object)[
+      sapply(object, is.numeric)
+    ]
+    
+    numeric_vars <- setdiff(
+      numeric_vars,
+      ignored_numeric
+    )
+  }
   
-  # PWGTP is the weight, so we do not summarize it itself
-  available_numeric <- setdiff(
-    available_numeric,
-    "PWGTP"
-  )
-  # Use all available variables if none are selected
-if (is.null(numeric_vars)) {
-  numeric_vars <- available_numeric
-}
-
-if (is.null(categorical_vars)) {
-  categorical_vars <- available_categorical
-}
-
-# Make sure the selected numeric variables are available
-if (!all(numeric_vars %in% available_numeric)) {
-  stop("One or more numeric variables are not available.")
-}
-
-# Make sure the selected categorical variables are available
-if (!all(categorical_vars %in% available_categorical)) {
-  stop("One or more categorical variables are not available.")
-}
-  # Make a list to hold all of the summaries
-summary_results <- list()
-
-# Calculate the weighted summaries for numeric variables
-for (var in numeric_vars) {
+  # Find the categorical variables if none were selected
+  if (is.null(categorical_vars)) {
+    categorical_vars <- names(object)[
+      sapply(object, is.factor)
+    ]
+  }
   
-  values <- object[[var]]
-  weights <- object$PWGTP
+  # This list will hold all of the summaries
+  summary_results <- list()
   
-  # Only use rows that have a value for this variable
-  keep <- !is.na(values)
-  values <- values[keep]
-  weights <- weights[keep]
+  # Calculate weighted means and standard deviations
+  for (var in numeric_vars) {
+    
+    values <- object[[var]]
+    weights <- object$PWGTP
+    
+    keep <- !is.na(values) & !is.na(weights)
+    values <- values[keep]
+    weights <- weights[keep]
+    
+    weighted_mean <- sum(values * weights) / sum(weights)
+    
+    weighted_sd <- sqrt(
+      sum(values^2 * weights) / sum(weights) -
+        weighted_mean^2
+    )
+    
+    summary_results[[var]] <- c(
+      mean = weighted_mean,
+      sd = weighted_sd
+    )
+  }
   
-  # Calculate the weighted mean
-  weighted_mean <- sum(values * weights) / sum(weights)
+  # Calculate weighted counts for categorical variables
+  for (var in categorical_vars) {
+    
+    values <- object[[var]]
+    weights <- object$PWGTP
+    
+    weighted_counts <- tapply(
+      weights,
+      values,
+      sum,
+      na.rm = TRUE
+    )
+    
+    summary_results[[var]] <- weighted_counts
+  }
   
-  # Calculate the weighted standard deviation
-  weighted_sd <- sqrt(
-    sum(values^2 * weights) / sum(weights) -
-      weighted_mean^2
-  )
-  
-  summary_results[[var]] <- c(
-    mean = weighted_mean,
-    sd = weighted_sd
-  )
-}
-# Get the weighted counts for categorical variables
-for (var in categorical_vars) {
-  
-  values <- object[[var]]
-  weights <- object$PWGTP
-  
-  # Add up the weights for each category
-  weighted_counts <- tapply(
-    weights,
-    values,
-    sum,
-    na.rm = TRUE
-  )
-  
-  summary_results[[var]] <- weighted_counts
-}
-
-# Return all of the summaries
-summary_results
+  # Return all of the summaries
+  summary_results
 }
 ```
 
@@ -597,7 +573,7 @@ summary_results
 I also want a quick way to compare a numeric variable across different categories. I will create a plot function for census objects that makes a weighted boxplot using the person weights.
 
 ```{r}
-# Make a weighted boxplot for census data
+# Make a weighted boxplot for a numeric and categorical variable
 plot.census <- function(
   x,
   categorical_var,
@@ -605,42 +581,171 @@ plot.census <- function(
   ...
 ) {
   
-  # Make sure only one variable of each type was selected
-  if (length(categorical_var) != 1 || length(numeric_var) != 1) {
-    stop("Choose one categorical variable and one numeric variable.")
+  # Make sure the selected categorical variable is a factor
+  if (!is.factor(x[[categorical_var]])) {
+    stop("The categorical variable must be a factor.")
   }
   
-  # Make sure the categorical variable is in the data
-  if (
-    !categorical_var %in% names(x) ||
-    !is.factor(x[[categorical_var]])
-  ) {
-    stop("The categorical variable must be a factor in the data.")
+  # Make sure the selected numeric variable is numeric
+  if (!is.numeric(x[[numeric_var]])) {
+    stop("The numeric variable must be numeric.")
   }
   
-  # Make sure the numeric variable is in the data
-  if (
-    !numeric_var %in% names(x) ||
-    !is.numeric(x[[numeric_var]]) ||
-    numeric_var == "PWGTP"
-  ) {
-    stop("The numeric variable must be an available numeric variable.")
-  }
-  # Make the weighted boxplot
-ggplot(
-  x,
-  aes(
-    x = get(categorical_var),
-    y = get(numeric_var),
-    weight = PWGTP
-  )
-) +
-  geom_boxplot() +
-  labs(
-    x = categorical_var,
-    y = numeric_var
-  )
+  # Create the weighted boxplot
+  ggplot(
+    x,
+    aes(
+      x = get(categorical_var),
+      y = get(numeric_var),
+      weight = PWGTP
+    )
+  ) +
+    geom_boxplot() +
+    labs(
+      x = categorical_var,
+      y = numeric_var
+    )
 }
 ```
 
+## Investigation
 
+Now that all of the functions are working, I can use them to look at the PUMS data in a few different ways. I am going to compare some of the variables across years and groups and use the summary and plot functions I created above to look for any differences or patterns in the data.
+
+### Commuting Patterns in North Carolina
+
+I decided to look at commuting patterns in North Carolina and see if there are any differences across years or between males and females. I will start by pulling age and travel time to work for all four years.
+
+```{r}
+# Pull North Carolina commuting data for all four years
+commute_data <- get_multiple_years(
+  years = "all",
+  numeric_vars = c("AGEP", "JWMNP", "PWGTP"),
+  categorical_vars = "SEX",
+  geography = "State",
+  geography_value = "37"
+)
+
+glimpse(commute_data)
+```
+
+First, I will use my summary function to get an overall look at the people with a reported travel time and see how the data are split across sex and year. Since JWMNP has a lot of values equal to 0, I am going to leave those out when looking specifically at commute times. This way the commute time summaries are based on people who have a reported travel time greater than 0.
+
+```{r}
+# Keep people with a reported travel time
+commute_workers <- commute_data |>
+  filter(JWMNP > 0)
+
+# Keep the census class after filtering
+class(commute_workers) <- c(
+  "census",
+  class(commute_workers)
+)
+
+commute_summary <- summary(commute_workers)
+
+commute_summary
+```
+
+After removing the 0 travel times, the average commute time is about 25.2 minutes. The standard deviation is about 21.1 minutes, so there is quite a bit of variation in how long people are commuting. The average age for this group is about 41.6 years. The weighted counts also increase across the four years, with the largest count in 2024.
+
+I also want to see if commute times look different between males and females. I can use my plot function to compare the distributions.
+
+```{r}
+# Compare commute times by sex
+plot(
+  commute_workers,
+  categorical_var = "SEX",
+  numeric_var = "JWMNP"
+)
+```
+
+The commute time distributions for males and females look pretty similar. Their medians are almost the same and most of the values fall within a similar range. Both groups also have quite a few longer commute times that show up as outliers, so there does not seem to be a major difference between the two groups from this plot.
+
+Next, I want to see if commute times changed much across the four years.
+
+```{r}
+# Compare commute times across years
+plot(
+  commute_workers,
+  categorical_var = "year",
+  numeric_var = "JWMNP"
+)
+```
+
+The commute time distributions stay pretty similar from 2021 through 2024. The medians are close across all four years, although 2024 looks slightly higher. There are also longer commute time outliers in every year, so overall the distributions do not seem to have changed very much.
+
+To get a more exact comparison, I will also use my summary function separately for each year.
+
+```{r}
+# Get the commute time summary for each year
+year_summaries <- lapply(
+  levels(commute_workers$year),
+  function(current_year) {
+    
+    year_data <- commute_workers |>
+      filter(year == current_year)
+    
+    class(year_data) <- c(
+      "census",
+      class(year_data)
+    )
+    
+    summary(
+      year_data,
+      numeric_vars = "JWMNP",
+      categorical_vars = character(0)
+    )
+  }
+)
+
+names(year_summaries) <- levels(commute_workers$year)
+
+year_summaries
+```
+
+The weighted average commute time increased a little each year. It went from 
+about 24.6 minutes in 2021 to 25.8 minutes in 2024, which is an increase of 
+a little over one minute. This also matches the boxplots above, where the 
+commute times looked pretty similar across the four years but were slightly 
+higher in 2024.
+
+### Age and School Enrollment in the South
+
+For one more comparison, I wanted to try the functions with a different 
+geographic level and different variables. This time, I will look at age and 
+school enrollment in the South using the 2024 data.
+
+```{r}
+# Pull 2024 data for the South
+south_data <- get_pums_data(
+  year = 2024,
+  numeric_vars = c("AGEP", "PWGTP"),
+  categorical_vars = "SCH",
+  geography = "Region",
+  geography_value = "3"
+)
+
+summary(south_data)
+```
+
+The weighted average age in the South in 2024 was about 39.5 years. The 
+largest school enrollment group was people who had not attended school in 
+the last three months. There were also more people attending public school 
+or public college than private school, college, or home school.
+
+### Investigation Takeaways
+
+Overall, the functions made it pretty easy to look at the Census data in a 
+few different ways without having to rewrite the same code each time. For 
+the North Carolina commuting data, average travel time to work increased 
+slightly from 2021 to 2024, although the distributions were pretty similar 
+across the four years. The comparison by sex also showed similar commute 
+time distributions for males and females.
+
+I also tried the functions with a different geographic level by looking at 
+the South in 2024. The weighted average age was about 39.5 years, and the 
+largest school enrollment group was people who had not attended school in 
+the last three months. This was a useful way to check that the functions 
+could handle different variables and geographic selections instead of only 
+the North Carolina example.
