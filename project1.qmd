@@ -24,44 +24,42 @@ library(lubridate)
 I am starting with 2024 so I can see how the variable information is set up before making a function that will work for all four years.
 
 ```{r}
+# Get the variable info for 2024
 url_2024 <- "https://api.census.gov/data/2024/acs/acs1/pums/variables.json"
 
 response_2024 <- GET(url_2024)
 
-# Parse the JSON response into an R list
-variables_2024 <- content(response_2024, as = "parsed")
+variables_2024 <- content(
+  response_2024,
+  as = "parsed"
+)
 
-# Variables needed for 2024
+# Variables I need for the project
 needed_vars <- c(
   "AGEP", "GASP", "GRPIP", "JWAP", "JWDP", "JWMNP",
   "PWGTP", "FER", "HHL", "SCH", "SCHL", "SEX",
   "STATE", "REGION", "DIVISION"
 )
 
-# Keep only the variables needed for the project
 selected_2024 <- variables_2024$variables[needed_vars]
-
-names(selected_2024)
 ```
 
 Now that I know how the variable information is stored, I can make a function to do this for each year. One thing I have to account for is that the state variable is called ST in 2021 and 2022, but STATE in 2023 and 2024.
 
 ```{r}
-# Pull and parse the variable information for a given year
 get_variable_info <- function(year) {
   
-  # Create the URL for the selected year
+  # make the url for that year
   url <- paste0(
     "https://api.census.gov/data/",
     year,
     "/acs/acs1/pums/variables.json"
   )
   
-  # Pull and parse the JSON data
   response <- GET(url)
   variable_data <- content(response, as = "parsed")
   
-  # The state variable has a different name in 2021 and 2022
+  # State has a different name in 2021 and 2022
   state_var <- if (year %in% c(2021, 2022)) "ST" else "STATE"
   
   # Variables needed for the project
@@ -71,7 +69,6 @@ get_variable_info <- function(year) {
     state_var, "REGION", "DIVISION"
   )
   
-  # Return only the needed variables
   variable_data$variables[needed_vars]
 }
 ```
@@ -80,13 +77,13 @@ for all four years. I will save everything together in the data folder so I
 can use it again later without having to pull it every time.
 
 ```{r}
-# Get the variable information for each year
+# Get the variable info for each year
 variable_info_2021 <- get_variable_info(2021)
 variable_info_2022 <- get_variable_info(2022)
 variable_info_2023 <- get_variable_info(2023)
 variable_info_2024 <- get_variable_info(2024)
 
-# Store all four years together in one list
+# Put everything together and save it
 variable_info <- list(
   `2021` = variable_info_2021,
   `2022` = variable_info_2022,
@@ -94,7 +91,6 @@ variable_info <- list(
   `2024` = variable_info_2024
 )
 
-# Save the variable information in the data folder
 saveRDS(variable_info, "data/variable_info.rds")
 ```
 
@@ -103,7 +99,7 @@ saveRDS(variable_info, "data/variable_info.rds")
 Now I can start working with the actual PUMS data. I am going to start with a simple API request to see what the returned data looks like and then create a function to turn it into a tibble.
 
 ```{r}
-# Test a basic PUMS API call
+# Try a basic PUMS API call
 pums_response <- GET(
   "https://api.census.gov/data/2024/acs/acs1/pums",
   query = list(
@@ -113,17 +109,16 @@ pums_response <- GET(
   )
 )
 
-# Check that the request was successful
+# Check that the request worked
 status_code(pums_response)
 ```
 
 The API returns the variable names in the first row and the actual data in the rows after that. I will make a small helper function to separate those and return the data as a tibble.
 
 ```{r}
-# Convert a Census API response into a tibble
 response_to_tibble <- function(response) {
   
-  # Read the JSON returned by the API
+  # Read the api response
   api_data <- content(
     response,
     as = "parsed",
@@ -132,14 +127,13 @@ response_to_tibble <- function(response) {
     simplifyVector = FALSE
   )
   
-  # The first row has the column names
+  # First row has the column names
   column_names <- unlist(api_data[[1]])
   
-  # Everything after the first row is the actual data
+  # The rest are the actual data
   data_rows <- lapply(api_data[-1], unlist)
   data_matrix <- do.call(rbind, data_rows)
   
-  # Turn everything into a tibble and add the column names
   census_tibble <- as_tibble(
     data_matrix,
     .name_repair = "minimal"
@@ -156,10 +150,9 @@ The helper function gets the data into a tibble, but the variables still need to
 JWAP and JWDP are a little different from the other numeric variables because the Census stores them as codes for ranges of time. I will use the middle of each time range as the value, so I made a helper function to calculate the midpoint.
 
 ```{r}
-# Convert a Census time range into its midpoint
 get_time_midpoint <- function(time_range) {
   
-  # Return NA if there is no time to use
+  # Missing times should just be NA
   if (
     length(time_range) == 0 ||
     is.na(time_range) ||
@@ -168,20 +161,20 @@ get_time_midpoint <- function(time_range) {
     return(NA)
   }
   
-  # Clean up a.m. and p.m. so the times can be read
+  # Clean up the AM and PM
   time_range <- str_replace_all(
     time_range,
     c("a\\.m\\." = "AM", "p\\.m\\." = "PM")
   )
   
-  # Split the beginning and ending times
+  # Split the time range
   times <- str_split(time_range, " to ")[[1]]
   
-  # Read both times using lubridate
+  # Turn both into times
   start_time <- parse_date_time(times[1], orders = "I:M p")
   end_time <- parse_date_time(times[2], orders = "I:M p")
   
-  # Find the middle of the time range
+  # Get the time midpoint
   midpoint <- start_time + (end_time - start_time) / 2
   
   midpoint
@@ -199,14 +192,14 @@ get_pums_data <- function(
   geography_value = NULL
 ) {
   
-  # Make sure the year is one of the four years being used
+  # Check the year
   valid_years <- c(2021, 2022, 2023, 2024)
   
   if (!year %in% valid_years) {
     stop("Year must be 2021, 2022, 2023, or 2024.")
   }
   
-  # Check the numeric variables
+  # Numeric variable options
   valid_numeric_vars <- c(
     "AGEP", "GASP", "GRPIP", "JWAP",
     "JWDP", "JWMNP", "PWGTP"
@@ -220,10 +213,10 @@ get_pums_data <- function(
     stop("At least one numeric variable besides PWGTP must be selected.")
   }
   
-  # PWGTP always needs to be included
+  # always include the weight
   numeric_vars <- unique(c(numeric_vars, "PWGTP"))
   
-  # Check the categorical variables
+  # Categorical variable options
   valid_categorical_vars <- c(
     "FER", "HHL", "SCH", "SCHL", "SEX"
   )
@@ -236,7 +229,7 @@ get_pums_data <- function(
     stop("One or more categorical variables are invalid.")
   }
   
-  # Make sure only one geography level was chosen
+  # Check the geography
   valid_geographies <- c("Region", "Division", "State")
   
   if (length(geography) != 1) {
@@ -247,11 +240,11 @@ get_pums_data <- function(
     stop("Geography must be Region, Division, or State.")
   }
   
-  # Load the variable information saved earlier
+  # Use the variable info I saved earlier
   variable_info <- readRDS("data/variable_info.rds")
   year_info <- variable_info[[as.character(year)]]
   
-  # Set up the selected geography
+  # Set up the geography
   if (geography == "State") {
     geography_var <- if (year %in% c(2021, 2022)) "ST" else "STATE"
     geography_values <- year_info[[geography_var]]$values$item
@@ -268,12 +261,12 @@ get_pums_data <- function(
     default_value <- "5"
   }
   
-  # Use the default if a specific geography was not given
+  # Use my defaults if nothing was entered
   if (is.null(geography_value)) {
     geography_value <- default_value
   }
   
-  # Make sure the geography value is actually available
+  # Make sure the value is valid
   if (
     geography_value != "all" &&
     !geography_value %in% names(geography_values)
@@ -281,27 +274,25 @@ get_pums_data <- function(
     stop("The selected geography value is invalid.")
   }
   
-  # Put together the variables we want from the API
+  # Variables to pull
   requested_vars <- unique(c(
     numeric_vars,
     categorical_vars,
     geography_var
   ))
   
-  # Build the API URL for the selected year
+  # Make the API url
   api_url <- paste0(
     "https://api.census.gov/data/",
     year,
     "/acs/acs1/pums"
   )
   
-  # Census uses * when we want every value for a geography
-  api_geography_value <- if (
-    geography_value == "all"
-  ) {
-    "*"
+  # Census uses * when we want every value
+  if (geography_value == "all") {
+    api_geography_value <- "*"
   } else {
-    geography_value
+    api_geography_value <- geography_value
   }
   
   geography_query <- paste0(
@@ -310,7 +301,7 @@ get_pums_data <- function(
     api_geography_value
   )
   
-  # Pull the data from the Census API
+  # Pull the data
   response <- GET(
     api_url,
     query = list(
@@ -320,30 +311,25 @@ get_pums_data <- function(
     )
   )
   
-  # Turn the API response into a tibble
+  # Turn it into a tibble
   census_data <- response_to_tibble(response)
   
-  # Convert the regular numeric variables
-  regular_numeric_vars <- setdiff(
-    numeric_vars,
-    c("JWAP", "JWDP")
-  )
+  # Regular numeric variables
+  regular_numeric_vars <- numeric_vars[
+    !numeric_vars %in% c("JWAP", "JWDP")
+  ]
   
-  census_data <- census_data |>
-    mutate(
-      across(
-        all_of(regular_numeric_vars),
-        as.numeric
-      )
-    )
+  # Make them numeric
+  for (var in regular_numeric_vars) {
+    census_data[[var]] <- as.numeric(census_data[[var]])
+  }
   
-  # See if either of the time variables was selected
-  time_vars <- intersect(
-    numeric_vars,
-    c("JWAP", "JWDP")
-  )
+  # See which time variables were selected
+  time_vars <- numeric_vars[
+    numeric_vars %in% c("JWAP", "JWDP")
+  ]
   
-  # Convert the time codes to the middle of each time range
+  # Convert the time codes
   for (var in time_vars) {
     
     time_values <- year_info[[var]]$values$item
@@ -352,12 +338,12 @@ get_pums_data <- function(
       census_data[[var]],
       function(code) {
         
-        # A code of 0 means there is no time to use
+        # 0 means there is no time
         if (is.na(code) || code == "" || code == "0") {
           return(NA_character_)
         }
         
-        # Add leading zeros so the codes match the saved information
+        # Make the codes match the saved values
         code <- str_pad(
           code,
           width = 3,
@@ -365,7 +351,7 @@ get_pums_data <- function(
           pad = "0"
         )
         
-        # If there still is not a match, treat it as missing
+        # Anything that doesn't match is missing
         if (!code %in% names(time_values)) {
           return(NA_character_)
         }
@@ -383,7 +369,7 @@ get_pums_data <- function(
     )
   }
   
-  # Replace the category codes with their actual labels
+  # Change category codes to labels
   for (var in categorical_vars) {
     
     category_values <- year_info[[var]]$values$item
@@ -395,7 +381,7 @@ get_pums_data <- function(
     )
   }
   
-  # The API adds the geography again, so remove that extra column
+  # The API adds the geography again, so remove the extra column
   api_geography_var <- tolower(geography)
   
   if (
@@ -406,7 +392,7 @@ get_pums_data <- function(
       select(-all_of(api_geography_var))
   }
   
-  # Give the finished tibble the census class
+  # Add the census class
   class(census_data) <- c(
     "census",
     class(census_data)
@@ -415,12 +401,22 @@ get_pums_data <- function(
   census_data
 }
 ```
+
+Now that the function is set up, I can try it with the default options. This
+will pull the 2024 data for North Carolina and return the variables with the
+types I set up above.
+
+```{r}
+example_data <- get_pums_data()
+
+example_data
+```
+
 ### Combining Years
 
 The function above only pulls one year at a time, but I also want to be able to look at multiple years together. I will make another function that uses the single-year function for each year I choose and then combines the results. I will also add a year column so I can tell which year each observation came from.
 
 ```{r}
-# Pull PUMS data for more than one year
 get_multiple_years <- function(
   years = "all",
   numeric_vars = c("AGEP", "PWGTP"),
@@ -429,55 +425,50 @@ get_multiple_years <- function(
   geography_value = NULL
 ) {
   
-  # These are the years available for this project
   valid_years <- c(2021, 2022, 2023, 2024)
   
-  # Use all four years if "all" is selected
+  # Use all four years if all is selected
   if (length(years) == 1 && years == "all") {
     years <- valid_years
   }
   
-  # Make sure all of the selected years are available
+  # Check the years
   if (!all(years %in% valid_years)) {
     stop("Years must be 2021, 2022, 2023, 2024, or all.")
   }
   
-  # Pull the data for each selected year
-  year_data <- lapply(
-    years,
-    function(current_year) {
-      
-      data <- get_pums_data(
-        year = current_year,
-        numeric_vars = numeric_vars,
-        categorical_vars = categorical_vars,
-        geography = geography,
-        geography_value = geography_value
-      )
-      
-      # Keep the state variable name the same across years
-      if (geography == "State" && "ST" %in% names(data)) {
-        data <- data |>
-          rename(STATE = ST)
-      }
-      
-      # Keep track of which year each row came from
-      data$year <- current_year
-      
-      data
+  year_data <- list()
+  
+  # Pull each year and add it to the list
+  for (i in seq_along(years)) {
+    
+    current_year <- years[i]
+    
+    data <- get_pums_data(
+      year = current_year,
+      numeric_vars = numeric_vars,
+      categorical_vars = categorical_vars,
+      geography = geography,
+      geography_value = geography_value
+    )
+    
+    # State was called ST in 2021 and 2022
+    if ("ST" %in% names(data)) {
+      names(data)[names(data) == "ST"] <- "STATE"
     }
-  )
+    
+    data$year <- current_year
+    
+    year_data[[i]] <- data
+  }
   
-  # Combine all of the years into one tibble
+  # Combine everything
   combined_data <- bind_rows(year_data)
-  
-  # Treat year as a category instead of a numeric variable
   combined_data$year <- factor(combined_data$year)
   
-  # Keep the census class after combining the data
   class(combined_data) <- c(
     "census",
-    setdiff(class(combined_data), "census")
+    class(combined_data)
   )
   
   combined_data
@@ -491,7 +482,6 @@ get_multiple_years <- function(
 Now that the data can be pulled and combined, I want an easier way to summarize it. I will create a summary function specifically for census objects. For numeric variables, I will use the person weights to calculate weighted means and standard deviations. For categorical variables, I will use the weights to get counts for each category.
 
 ```{r}
-# Summarize numeric and categorical Census variables
 summary.census <- function(
   object,
   numeric_vars = NULL,
@@ -499,37 +489,30 @@ summary.census <- function(
   ...
 ) {
   
-  # Don't include the weights or time variables in the numeric summaries
-  ignored_numeric <- c("PWGTP", "JWAP", "JWDP")
-  
-  # Find the numeric variables if none were selected
+  # If no numeric variables are picked, use all of them
   if (is.null(numeric_vars)) {
-    numeric_vars <- names(object)[
-      sapply(object, is.numeric)
-    ]
+    numeric_vars <- names(object)[sapply(object, is.numeric)]
     
-    numeric_vars <- setdiff(
-      numeric_vars,
-      ignored_numeric
-    )
-  }
-  
-  # Find the categorical variables if none were selected
-  if (is.null(categorical_vars)) {
-    categorical_vars <- names(object)[
-      sapply(object, is.factor)
+    # Don't include the weight or time variables
+    numeric_vars <- numeric_vars[
+      !numeric_vars %in% c("PWGTP", "JWAP", "JWDP")
     ]
   }
   
-  # This list will hold all of the summaries
-  summary_results <- list()
+  # If no categorical variables are picked, use all factors
+  if (is.null(categorical_vars)) {
+    categorical_vars <- names(object)[sapply(object, is.factor)]
+  }
   
-  # Calculate weighted means and standard deviations
+  results <- list()
+  
+  # Numeric summaries
   for (var in numeric_vars) {
     
     values <- object[[var]]
     weights <- object$PWGTP
     
+    # Only use rows that aren't missing
     keep <- !is.na(values) & !is.na(weights)
     values <- values[keep]
     weights <- weights[keep]
@@ -541,13 +524,13 @@ summary.census <- function(
         weighted_mean^2
     )
     
-    summary_results[[var]] <- c(
+    results[[var]] <- c(
       mean = weighted_mean,
       sd = weighted_sd
     )
   }
   
-  # Calculate weighted counts for categorical variables
+  # Categorical counts
   for (var in categorical_vars) {
     
     values <- object[[var]]
@@ -560,11 +543,10 @@ summary.census <- function(
       na.rm = TRUE
     )
     
-    summary_results[[var]] <- weighted_counts
+    results[[var]] <- weighted_counts
   }
   
-  # Return all of the summaries
-  summary_results
+  results
 }
 ```
 
@@ -573,7 +555,6 @@ summary.census <- function(
 I also want a quick way to compare a numeric variable across different categories. I will create a plot function for census objects that makes a weighted boxplot using the person weights.
 
 ```{r}
-# Make a weighted boxplot for a numeric and categorical variable
 plot.census <- function(
   x,
   categorical_var,
@@ -581,17 +562,16 @@ plot.census <- function(
   ...
 ) {
   
-  # Make sure the selected categorical variable is a factor
+  # Make sure the variables are the right types
   if (!is.factor(x[[categorical_var]])) {
     stop("The categorical variable must be a factor.")
   }
   
-  # Make sure the selected numeric variable is numeric
   if (!is.numeric(x[[numeric_var]])) {
     stop("The numeric variable must be numeric.")
   }
   
-  # Create the weighted boxplot
+  # Make the weighted boxplot
   ggplot(
     x,
     aes(
@@ -617,7 +597,7 @@ Now that all of the functions are working, I can use them to look at the PUMS da
 I decided to look at commuting patterns in North Carolina and see if there are any differences across years or between males and females. I will start by pulling age and travel time to work for all four years.
 
 ```{r}
-# Pull North Carolina commuting data for all four years
+# Get NC commuting data for all four years
 commute_data <- get_multiple_years(
   years = "all",
   numeric_vars = c("AGEP", "JWMNP", "PWGTP"),
@@ -632,19 +612,14 @@ glimpse(commute_data)
 First, I will use my summary function to get an overall look at the people with a reported travel time and see how the data are split across sex and year. Since JWMNP has a lot of values equal to 0, I am going to leave those out when looking specifically at commute times. This way the commute time summaries are based on people who have a reported travel time greater than 0.
 
 ```{r}
-# Keep people with a reported travel time
+# Only keep people with a commute time
 commute_workers <- commute_data |>
   filter(JWMNP > 0)
-
-# Keep the census class after filtering
-class(commute_workers) <- c(
-  "census",
-  class(commute_workers)
-)
 
 commute_summary <- summary(commute_workers)
 
 commute_summary
+
 ```
 
 After removing the 0 travel times, the average commute time is about 25.2 minutes. The standard deviation is about 21.1 minutes, so there is quite a bit of variation in how long people are commuting. The average age for this group is about 41.6 years. The weighted counts also increase across the four years, with the largest count in 2024.
@@ -678,18 +653,13 @@ The commute time distributions stay pretty similar from 2021 through 2024. The m
 To get a more exact comparison, I will also use my summary function separately for each year.
 
 ```{r}
-# Get the commute time summary for each year
+# Look at average commute time for each year
 year_summaries <- lapply(
   levels(commute_workers$year),
   function(current_year) {
     
     year_data <- commute_workers |>
       filter(year == current_year)
-    
-    class(year_data) <- c(
-      "census",
-      class(year_data)
-    )
     
     summary(
       year_data,
@@ -717,7 +687,7 @@ geographic level and different variables. This time, I will look at age and
 school enrollment in the South using the 2024 data.
 
 ```{r}
-# Pull 2024 data for the South
+# Get 2024 data for the South
 south_data <- get_pums_data(
   year = 2024,
   numeric_vars = c("AGEP", "PWGTP"),
@@ -726,6 +696,7 @@ south_data <- get_pums_data(
   geography_value = "3"
 )
 
+# Summarize age and school enrollment
 summary(south_data)
 ```
 
