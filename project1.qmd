@@ -14,7 +14,7 @@ For this project, I am using data from the Census PUMS API. I will be creating f
 
 Before pulling the actual PUMS data, I first need some information about the variables I will be using. The Census API has JSON files that give the possible values and descriptions for each variable. I will save this information so I can use it later when cleaning the data.
 
-```{r}
+```{r, message=FALSE, warning=FALSE}
 library(httr)
 library(jsonlite)
 library(tidyverse)
